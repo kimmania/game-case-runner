@@ -19,6 +19,8 @@ export interface GameScreenOptions {
   relaxed: boolean;
   streakMultiplier: number;
   chainTotal: number;
+  /** Fixed seed (Daily Sprint). Defaults to random. */
+  seed?: number;
   onDone: (result: GameResult, state: GameState) => void;
 }
 
@@ -28,7 +30,7 @@ const fmt = (n: number): string =>
 export function renderGameScreen(root: HTMLElement, opts: GameScreenOptions): void {
   const state = createGame({
     tier: opts.tier,
-    seed: (Math.random() * 2 ** 31) | 0,
+    seed: opts.seed ?? ((Math.random() * 2 ** 31) | 0),
     relaxed: opts.relaxed,
     streakMultiplier: opts.streakMultiplier,
   });

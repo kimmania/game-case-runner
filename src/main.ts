@@ -18,10 +18,16 @@ interface Settings {
 
 const LS_SETTINGS = 'case-runner:settings';
 const LS_UNLOCK = 'case-runner:unlocked-tier';
+const LS_DAILY = 'case-runner:daily';
+
+/** Deterministic smoke-test hook: ?test=1 skips tutorial, reduces motion. */
+const TEST_MODE = new URLSearchParams(location.search).has('test');
 
 const settings: Settings = loadSettings();
 let streak: StreakState = initialStreak();
 let currentTier: TierConfig = TIERS[0];
+/** 'chain' = normal run; 'daily' = Daily Sprint single game. */
+let mode: 'chain' | 'daily' = 'chain';
 
 const app = document.getElementById('app')!;
 
@@ -45,6 +51,111 @@ function unlockedTier(): number {
   return Number(localStorage.getItem(LS_UNLOCK) ?? '1');
 }
 const fmt = (n: number): string => '$' + Math.round(n).toLocaleString('en-US');
+
+/* ---------- daily sprint ---------- */
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+/** FNV-1a hash of a string → 32-bit seed for mulberry32. */
+function seedFromString(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+interface DailyRecord {
+  date: string;
+  payout: number;
+  outcome: 'deal' | 'hold';
+  aboveEv: boolean;
+}
+function dailyRecord(): DailyRecord | null {
+  try {
+    const r = JSON.parse(localStorage.getItem(LS_DAILY) ?? 'null') as DailyRecord | null;
+    return r && r.date === todayKey() ? r : null;
+  } catch {
+    return null;
+  }
+}
+function dailyShareText(payout: number, outcome: 'deal' | 'hold'): string {
+  return `CASE RUNNER — Daily Sprint ${todayKey()} 🧳 ${outcome === 'deal' ? '🤝 DEAL' : '💼 CASE'} ${fmt(payout)} — beat my score! https://kimmania.github.io/game-case-runner/`;
+}
+function startDaily(): void {
+  mode = 'daily';
+  currentTier = TIERS[1]; // tier 2 rules
+  startGame();
+}
+function dailyEntryCard(): HTMLElement {
+  const rec = dailyRecord();
+  const card = document.createElement('button');
+  card.className = 'tier-card daily-card';
+  card.innerHTML =
+    `<span class="tier-name">⚡ Daily Sprint</span>` +
+    `<span class="tier-top">${todayKey()}</span>` +
+    (rec
+      ? `<span class="tier-meta">Done today: ${fmt(rec.payout)} — come back tomorrow!</span>`
+      : `<span class="tier-meta">One seeded deal, tier 2 rules, one shot. Same board for everyone.</span>`);
+  card.addEventListener('click', () => {
+    const done = dailyRecord();
+    if (done) showDailyResult(done.payout, done.outcome, done.aboveEv, false);
+    else startDaily();
+  });
+  return card;
+}
+/* ---------- daily result (shareable) ---------- */
+function showDailyResult(payout: number, outcome: 'deal' | 'hold', aboveEv: boolean, fresh: boolean): void {
+  app.innerHTML = '';
+  const screen = document.createElement('div');
+  screen.className = 'screen';
+  screen.appendChild(topbar('⚡ DAILY SPRINT'));
+  const sub = document.createElement('div');
+  sub.className = 'subtitle';
+  sub.textContent = `${todayKey()} · tier 2 rules · one game, one shot`;
+  screen.appendChild(sub);
+  const card = document.createElement('div');
+  card.className = 'result-card';
+  const big = document.createElement('div');
+  big.className = 'result-big';
+  big.textContent = fmt(payout);
+  card.appendChild(big);
+  const verdict = document.createElement('div');
+  verdict.className = aboveEv ? 'above-ev' : 'below-ev';
+  verdict.textContent = aboveEv
+    ? `▲ Above EV — ${outcome === 'deal' ? 'took the deal' : 'held the case'}!`
+    : '▼ Below EV — the banker wins today';
+  card.appendChild(verdict);
+  if (settings.relaxed) {
+    const flag = document.createElement('div');
+    flag.className = 'result-line';
+    flag.innerHTML = '<span>Mode</span><b>RELAXED (flagged)</b>';
+    card.appendChild(flag);
+  }
+  screen.appendChild(card);
+  if (fresh) sfxDeal();
+  const row = document.createElement('div');
+  row.className = 'offer-actions';
+  const share = document.createElement('button');
+  share.className = 'btn-gold btn-icon';
+  share.textContent = '📋 COPY SCORE';
+  share.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(dailyShareText(payout, outcome));
+      share.textContent = '✅ COPIED!';
+    } catch {
+      share.textContent = dailyShareText(payout, outcome);
+    }
+  });
+  const menu = document.createElement('button');
+  menu.className = 'btn-icon';
+  menu.textContent = '🏠 Tiers';
+  menu.addEventListener('click', showTierSelect);
+  row.append(share, menu);
+  screen.appendChild(row);
+  app.appendChild(screen);
+}
 
 function topbar(title: string): HTMLElement {
   const bar = document.createElement('div');
@@ -90,6 +201,7 @@ function showTierSelect(): void {
       `<span class="tier-meta">Chain target ${fmt(tier.chainTarget)} · ${tier.pickClockMs / 1000}s picks${tier.id <= unlocked - 0 && tier.id > 1 ? '' : ''}</span>` +
       (locked ? `<span class="tier-meta">Hit tier ${tier.id - 1} chain target to unlock</span>` : '');
     card.addEventListener('click', () => {
+      mode = 'chain';
       currentTier = tier;
       if (!settings.tutorialSeen) showTutorial(() => startGame());
       else startGame();
@@ -97,6 +209,7 @@ function showTierSelect(): void {
     grid.appendChild(card);
   }
   screen.appendChild(grid);
+  screen.appendChild(dailyEntryCard());
   app.appendChild(screen);
 }
 
@@ -105,14 +218,23 @@ function startGame(): void {
   renderGameScreen(app, {
     tier: currentTier,
     relaxed: settings.relaxed,
-    streakMultiplier: streak.multiplier,
-    chainTotal: streak.runTotal,
+    streakMultiplier: mode === 'daily' ? 1 : streak.multiplier,
+    chainTotal: mode === 'daily' ? 0 : streak.runTotal,
+    seed: mode === 'daily' ? seedFromString(`case-runner:${todayKey()}`) : undefined,
     onDone: showResult,
   });
 }
 
 /* ---------- result ---------- */
 function showResult(result: GameResult, state: GameState): void {
+  if (mode === 'daily') {
+    localStorage.setItem(
+      LS_DAILY,
+      JSON.stringify({ date: todayKey(), payout: result.payout, outcome: result.outcome, aboveEv: result.aboveEv } satisfies DailyRecord),
+    );
+    showDailyResult(result.payout, result.outcome, result.aboveEv, true);
+    return;
+  }
   const prev = streak;
   streak = nextStreak(streak, result.payout, result.aboveEv);
   const unlockedNow = unlockedTier();
@@ -281,4 +403,9 @@ function showTutorial(onDismiss: () => void): void {
 }
 
 applySettings();
+if (TEST_MODE) {
+  settings.tutorialSeen = true;
+  settings.reducedMotion = true;
+  saveSettings();
+}
 showTierSelect();

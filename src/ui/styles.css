@@ -58,6 +58,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 .tier-card .tier-top { color: var(--gold); font-weight: 700; }
 .tier-card .tier-meta { color: var(--dim); font-size: 12px; }
 .tier-card.locked { opacity: 0.45; }
+.daily-card { margin-top: 10px; width: 100%; border-style: dashed; }
+.daily-card .tier-name { color: var(--gold); }
 
 /* ---------- game ---------- */
 .hud { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
